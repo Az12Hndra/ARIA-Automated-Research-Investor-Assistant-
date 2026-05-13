@@ -1,1 +1,1 @@
-# ARIA-Automated-Research-Investor-Assistant-
+# MARS-Market-Analyst-Research-Sentinel-
