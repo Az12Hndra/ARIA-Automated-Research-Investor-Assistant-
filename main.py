@@ -8,6 +8,13 @@ import edge_tts
 import asyncio
 import os
 import time
+import pygame
+
+watchlist = [
+    'ADMR.JK', 'ADRO.JK', 'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BRMS.JK', 
+    'CDIA.JK', 'CUAN.JK', 'CYBR.JK', 'ENRG.JK', 'MBMA.JK', 'MDKA.JK', 
+    'MEDC.JK', 'NCKL.JK', 'PGEO.JK', 'RMKE.JK', 'SUPA.JK', 'TPIA.JK'
+]
 
 def get_indonesia_macro():
     idr_usd = yf.Ticker('USDIDR=X')
@@ -58,7 +65,10 @@ def get_fred_data(series_id, api_key, limit=1):
     response = requests.get(url)
     data = response.json()
 
-    print(json.dumps(data, indent=4))
+    if 'observations' not in data:
+        print(f'FRED ERROR for {series_id}: {data}')
+        return [{'value': 'N/A'}]
+
     return data['observations']
 
 def get_news(sector):
@@ -77,20 +87,47 @@ def get_news(sector):
     response = requests.get(url)
     data = response.json()
 
-    # print(json.dumps(data, indent=4))
-
     if data['status'] != 'ok':
         print('Failed to fetch news.')
         return []
     
     return data['articles']
 
+def detect_sector(user_input):
+    user_input = user_input.lower()
+
+    sector_map = {
+        'oil and gas': ['oil', 'gas', 'energy', 'petroleum', 'crude', 'brent', 'pgas', 'medc', 'enrg'],
+        'banking': ['bank', 'banking', 'finance', 'financial', 'interest rate', 'loans'],
+        'technology': ['tech', 'technology', 'digital', 'ai', 'startup', 'software', 'graphics card', 'robot'],
+        'mining': ['mining', 'nickel', 'coal', 'mineral', 'tambang', 'nckl', 'mdka'],
+        'consumer': ['consumer', 'retail', 'fmcg', 'goods', 'food']
+    }
+
+    for sector, keywords in sector_map.items():
+        for keyword in keywords:
+            if keyword in user_input:
+                return sector
+    
+    return 'oil and gas' # My default
+
 def get_stock_prices(watchlist):
     results = {}
     for ticker in watchlist:
         stock_data = yf.Ticker(ticker)
-        current_price = stock_data.fast_info['lastPrice']
-        results[ticker] = current_price
+
+        try:
+            current_price = stock_data.fast_info['lastPrice']
+            prev_close = stock_data.fast_info['previousClose']
+
+            percent_change = ((current_price - prev_close) / prev_close) * 100
+
+            results[ticker] = {
+                'price': current_price,
+                'change': percent_change
+            }
+        except KeyError:
+            results[ticker] = {'price': 0.0, 'change': 0.0}
     
     return results
 
@@ -181,7 +218,7 @@ def print_banner():
 
     # Boot sequence
     boot_checks = [
-        ('Initializing M.A.R.S', 0.3),
+        ('Initializing MARS', 0.3),
         ('Connecting to FRED API', 0.5),
         ('Connecting to Jakarta Stock Exchange', 0.5),
         ('Loading News Pipeline', 0.4),
@@ -199,16 +236,61 @@ def print_banner():
     print(Fore.CYAN + '=' * 72 + Style.RESET_ALL)
     print()
 
-def display_dashboard():
-    pass
+def display_dashboard(indo_macro, global_macro, stocks, news):
 
+    # Macro Economics Section (Top-Level)
+    print(Fore.CYAN + '=== [ GLOBAL & DOMESTIC MACRO ] ===' + Style.RESET_ALL)
+    print(f'USD/IDR         : Rp {indo_macro['idr_usd']:.0f}')
+    print(f'JCI (IHSG)      : {indo_macro['ihsg']:.0f}')
+    print(f'Brent Crude     : ${global_macro['brent_price']:.2f}')
+    print(f'US Fed Rate     : {global_macro['fed_rate']}%')
+    print(f'US Inflation    : {global_macro['yoy_inflation']}%')
+    print(f'DXY             : {global_macro['dxy']:.2f}')
+
+    # Watchlist Section (Sector-Level)
+    print(Fore.CYAN + '\n=== [ ACTIVE WISHLIST ] ===' + Style.RESET_ALL)
+    for ticker, data in stocks.items():
+        price = data['price']
+        change = data['change']
+
+        if change > 0:
+            color = Fore.GREEN
+            arrow = '▲'
+        elif change < 0:
+            color = Fore.RED
+            arrow = '▼'
+        else:
+            color = Fore.YELLOW
+            arrow = '-'
+
+        ticker_clean = ticker.replace('.JK', '')
+        print(color + f'[{ticker_clean:<5}] : Rp {price:>7,.0f} | {arrow} {change:>+6.2f}%' + Style.RESET_ALL)
+
+    # Lates Intel Section (Micro-Level)
+    print(Fore.CYAN + '\n=== [ SECTOR INTELLIGENCE ] ===' + Style.RESET_ALL)
+    for articles in news:
+        print(Fore.YELLOW + f'📰 {articles['title']}' + Style.RESET_ALL)
+        print(f'    Source: {articles['source']['name']}')
+        print(f'    URL: {articles['url']}\n')
+    
+    print(Fore.GREEN + '[SYSTEM] Scan Complete. Awaiting orders, Operator.' + Style.RESET_ALL)
+    speak('Scan complete. Awaiting your orders, sir.')
+    
 async def speak_async(text):
     tts = edge_tts.Communicate(text, voice='en-US-AvaNeural')
     await tts.save('speech.mp3')
 
 def speak(text):
     asyncio.run(speak_async(text))
-    os.system('start speech.mp3')
+    
+    pygame.mixer.init()
+    pygame.mixer.music.load('speech.mp3')
+    pygame.mixer.music.play()
+
+    while pygame.mixer.music.get_busy():
+        pygame.time.Clock().tick(10)
+
+    pygame.mixer.quit()
 
 def greet():
     hour = datetime.datetime.now().hour
@@ -217,40 +299,50 @@ def greet():
     if hour < 12:
         greetings = [
             "Good morning sir, how is your condition today?",
-            "Waking up early sir? Do you want me to run a full report for yesterday's news?",
+            "Waking up early sir?",
             "Morning sir, did you get enough sleep last night?",
             "Morning sir, how's your sleep?",
-            f"Morning, sir. M.A.R.S is now online. All systems are operational. Today is {date}. Here is your morning briefing.",
-            "Good morning. I have pulled the latest global market data for your review. Macroeconomic conditions have shifted overnight. Shall I begin the briefing?",
+            f"Morning, sir. MARS is now online. All systems are operational. Today is {date}.",
+            "Good morning. I have pulled the latest global market data for your review. Macroeconomic conditions have shifted overnight.",
             "Morning, sir. Brent crude and the Dollar Index have both moved since yesterday's close. I suggest we start with the macro overview. Ready when you are.",
-            "Good morning, sir. I trust you slept well. Global markets have been active overnight. I have everything ready. Where would you like to begin?"
+            "Good morning, sir. I trust you slept well. Global markets have been active overnight. I have everything ready."
         ]
     elif hour < 18:
         greetings = [
-            "Good afternoon, sir. Midday markets are in session. Shall I pull the latest price movements for your watchlist?",
-            "Afternoon sir. How is your day going? Shall I prepare a sector update?",
+            "Good afternoon, sir. Midday markets are in session.",
+            "Afternoon sir. How is your day going?",
             "Good afternoon. Markets are moving. Ready to run your analysis whenever you are."
         ]
     else:
         greetings = [
-            "Good evening, sir. Markets are closing. Shall I prepare your end of day summary?",
-            "Evening sir. Long day? Let me pull up the closing numbers for you.",
-            "Good evening. The markets have closed. Shall I run a full end of day report?"
+            "Good evening, sir. Markets are closing.",
+            "Evening sir. Long day?",
+            "Good evening. The markets have closed, sir."
         ]
 
     greeting = random.choice(greetings)
-    print(greeting)
+    print(Fore.CYAN + greeting + Style.RESET_ALL)
     speak(greeting)
 
+    print(Fore.CYAN + '\nWhat sector shall I scan for intelligence today, sir?' + Style.RESET_ALL)
+    raw_input = input(Fore.YELLOW + '>> ' + Style.RESET_ALL)
+    sector = detect_sector(raw_input)
+    print(Fore.CYAN + f'Understood. Scanning \'{sector}\' intelligence...' + Style.RESET_ALL)
+
+    return sector
+
 def main():
-    pass
+    print_banner()
+    target_sector = greet()
+    
+    print(Fore.YELLOW + f'\nFetching macro, market, and \'{target_sector}\' intelligence...' + Style.RESET_ALL)
 
-# ticker = yf.Ticker('BBCA.JK')
-# print(dir(ticker))
-# help(ticker.history)
-# info = ticker.info
-# print(list(info.keys()))
+    indo_data = get_indonesia_macro()
+    global_data = get_global_macro()
+    stock_data = get_stock_prices(watchlist)
+    news_data = get_news(target_sector)
 
-# print(get_company_snapshot('PGAS.JK'))
+    display_dashboard(indo_data, global_data, stock_data, news_data)
 
-# print_banner()
+if __name__ == '__main__':
+    main()
