@@ -9,6 +9,8 @@ import asyncio
 import os
 import time
 import pygame
+import google.generativeai as genai
+import re
 
 watchlist = [
     'ADMR.JK', 'ADRO.JK', 'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BRMS.JK', 
@@ -60,7 +62,7 @@ def get_global_macro():
         'dxy': dxy_price
     }
 
-def get_fred_data(series_id, api_key, limit=1):
+def get_fred_data(series_id, api_key, limit=1): 
     url = f'https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={api_key}&sort_order=desc&limit={limit}&file_type=json'
     response = requests.get(url)
     data = response.json()
@@ -71,8 +73,23 @@ def get_fred_data(series_id, api_key, limit=1):
 
     return data['observations']
 
+def is_relevant(article, query_keywords):
+    title = (article.get('title') or '').lower()
+    description = (article.get('description') or '').lower()
+    content = (article.get('content') or '').lower()
+    combined = title + ' ' + description + ' ' + content
+
+    # Filter out podcasts and non-articles
+    junk_keywords = ['podcast', 'sounds.bbc', 'radio', 'test match', 'playlist']
+    if any(junk in combined for junk in junk_keywords):
+        return False
+
+    keywords = [k.strip() for k in query_keywords.lower().split(' or ')]
+    return any(keyword in combined for keyword in keywords)
+
 def get_news(sector):
     api_key = '64d7af736a51472191fe471584124310'
+    trusted_sources = 'bloomberg,reuters,financial-times,the-wall-street-journal,cnbc,bbc-news,the-economist'
     
     sector_keywords = {
         'oil and gas': 'oil OR gas OR crude OR OPEC OR Brent OR energy OR petroleum',
@@ -83,15 +100,20 @@ def get_news(sector):
     }
     query = sector_keywords.get(sector.lower(), sector)
 
-    url = f'https://newsapi.org/v2/everything?q={query}&apiKey={api_key}'
+    url = f'https://newsapi.org/v2/everything?q={query}&sources={trusted_sources}&apiKey={api_key}'
     response = requests.get(url)
     data = response.json()
 
     if data['status'] != 'ok':
         print('Failed to fetch news.')
         return []
-    
-    return data['articles']
+
+    articles = data['articles']
+    relevant_articles = [a for a in articles if is_relevant(a, query)]
+
+    print(f"Total articles fetched: {len(articles)}")
+    print(f"Relevant articles after filter: {len(relevant_articles)}")
+    return relevant_articles
 
 def detect_sector(user_input):
     user_input = user_input.lower()
@@ -236,10 +258,10 @@ def print_banner():
     print(Fore.CYAN + '=' * 72 + Style.RESET_ALL)
     print()
 
-def display_dashboard(indo_macro, global_macro, stocks, news):
+def display_dashboard(indo_macro, global_macro, stocks, news, alerts, ai_report):
 
     # Macro Economics Section (Top-Level)
-    print(Fore.CYAN + '=== [ GLOBAL & DOMESTIC MACRO ] ===' + Style.RESET_ALL)
+    print(Fore.CYAN + '\n=== [ GLOBAL & DOMESTIC MACRO ] ===' + Style.RESET_ALL)
     print(f'USD/IDR         : Rp {indo_macro['idr_usd']:.0f}')
     print(f'JCI (IHSG)      : {indo_macro['ihsg']:.0f}')
     print(f'Brent Crude     : ${global_macro['brent_price']:.2f}')
@@ -248,7 +270,7 @@ def display_dashboard(indo_macro, global_macro, stocks, news):
     print(f'DXY             : {global_macro['dxy']:.2f}')
 
     # Watchlist Section (Sector-Level)
-    print(Fore.CYAN + '\n=== [ ACTIVE WISHLIST ] ===' + Style.RESET_ALL)
+    print(Fore.CYAN + '\n=== [ ACTIVE WATCHLIST ] ===' + Style.RESET_ALL)
     for ticker, data in stocks.items():
         price = data['price']
         change = data['change']
@@ -265,6 +287,19 @@ def display_dashboard(indo_macro, global_macro, stocks, news):
 
         ticker_clean = ticker.replace('.JK', '')
         print(color + f'[{ticker_clean:<5}] : Rp {price:>7,.0f} | {arrow} {change:>+6.2f}%' + Style.RESET_ALL)
+    
+    # Alert Section
+    print(Fore.CYAN + '\n=== [ ALERT SYSTEM ] ===' + Style.RESET_ALL)
+    if not alerts:
+        print(Fore.GREEN + '✅ All positions within threshold. No alerts.' + Style.RESET_ALL)
+    else:
+        for alert_type, ticker, message in alerts:
+            if alert_type == 'DANGER':
+                print(Fore.RED + f'🚨 DANGER | {message}' + Style.RESET_ALL)
+                speak(message)
+            elif alert_type == 'OPPORTUNITY':
+                print(Fore.YELLOW + f'⚡ SIGNAL | {message}' + Style.RESET_ALL)
+                speak(message)
 
     # Lates Intel Section (Micro-Level)
     print(Fore.CYAN + '\n=== [ SECTOR INTELLIGENCE ] ===' + Style.RESET_ALL)
@@ -272,6 +307,11 @@ def display_dashboard(indo_macro, global_macro, stocks, news):
         print(Fore.YELLOW + f'📰 {articles['title']}' + Style.RESET_ALL)
         print(f'    Source: {articles['source']['name']}')
         print(f'    URL: {articles['url']}\n')
+    
+    # AI Section
+    print(Fore.CYAN + "\n=== [ M.A.R.S AI ANALYSIS ] ===" + Style.RESET_ALL)
+    print(Fore.WHITE + ai_report + Style.RESET_ALL)
+    speak(clean_for_speech(ai_report))
     
     print(Fore.GREEN + '[SYSTEM] Scan Complete. Awaiting orders, Operator.' + Style.RESET_ALL)
     speak('Scan complete. Awaiting your orders, sir.')
@@ -291,6 +331,17 @@ def speak(text):
         pygame.time.Clock().tick(10)
 
     pygame.mixer.quit()
+
+def clean_for_speech(text):
+    # remove ** bold markers
+    text = re.sub(r'\*\*', '', text)
+    # remove * italic markers
+    text = re.sub(r'\*', '', text)
+    # remove # headers
+    text = re.sub(r'#+\s', '', text)
+    # remove numbered list dots
+    text = re.sub(r'\d+\.\s', '', text)
+    return text
 
 def greet():
     hour = datetime.datetime.now().hour
@@ -331,7 +382,91 @@ def greet():
 
     return sector
 
+def load_config():
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    with open(config_path, 'r') as f:
+        return json.load(f)
+
+def save_config(config):
+    config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=4)
+
+def check_alerts(stocks, config):
+    thresholds = config['alert_thresholds']
+    alerts = []
+
+    for ticker, data in stocks.items():
+        if ticker in thresholds:
+            price = data['price']
+            min_price = thresholds[ticker]['min']
+            max_price = thresholds[ticker]['max']
+
+            if price < min_price:
+                message = f'Warning. {ticker} is below support at Rp {price:,.0f}. Support level is Rp {min_price:,.0f}'
+                alerts.append(('DANGER', ticker, message))
+            elif price > max_price:
+                message = f'Alert. {ticker} has broken resistance at Rp {price:,.0f}. Resistance level is Rp {max_price:,.0f}'
+                alerts.append(('OPPORTUNITY', ticker, message))
+    
+    return alerts
+
+def init_gemini(config):
+    genai.configure(api_key=config['gemini_api_key'])
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    return model
+
+def analyze_with_ai(model, global_macro, indo_macro, stocks, sector):
+    context = f"""
+    You are MARS, an advanced financial analyst AI assistant.
+    Analyze the following real-time market data using strict top-down analysis framework.
+    Be concise, data-driven, and professional. Speak directly to the operator.
+
+    === GLOBAL MACRO ===
+    Fed Rate: {global_macro['fed_rate']}%
+    US Inflation (YoY): {global_macro['yoy_inflation']}%
+    10Y Inflation Expectation: {global_macro['inflation_expectation']}%
+    US GDP Growth : {global_macro['us_gdp']}%
+    Brent Crude: ${global_macro['brent_price']:.2f}
+    DXY: {global_macro['dxy']:.2f}
+
+    === INDONESIA MACRO ===
+    USD/IDR: Rp {indo_macro['idr_usd']:,.0f}
+    IHSD: {indo_macro['ihsg']:,.0f}
+
+    === WATCHLIST ({sector.upper()}) SECTOR ===
+    {chr(10).join([f'{ticker}: Rp {data['price']:,.0f} ({data['change']:+.2f}%)' for ticker, data in stocks.items()])}
+
+    Based on this data, provide:
+    1. Global macro assessment (2-3 sentences)
+    2. Indonesia macro impact (2-3 sentences)
+    3. Sector outlook for {sector} (2-3 sentences)
+    4. Top 2 stocks to watch and why (based on price movement)
+    5. One key risk to monitor today
+
+    Keep the entire response under 200 words. Be direct and actionable.
+    """
+
+    try:
+        response = model.generate_content(context)
+        return response.text
+    except Exception as e:
+        if 'ResourceExhausted' in str(e):
+            print(Fore.YELLOW + "Rate limit hit. Waiting 60 seconds..." + Style.RESET_ALL)
+            time.sleep(60)
+            response = model.generate_content(context)
+            return response.text
+        else:
+            return "AI analysis unavailable at this time."
+
+def interactive_model(model, global_macro, indo_macro, stocks, config):
+    pass
+
 def main():
+    config = load_config()
+    watchlist = config['watchlist']
+    model = init_gemini(config)
+
     print_banner()
     target_sector = greet()
     
@@ -341,8 +476,13 @@ def main():
     global_data = get_global_macro()
     stock_data = get_stock_prices(watchlist)
     news_data = get_news(target_sector)
+    alerts = check_alerts(stock_data, config)
 
-    display_dashboard(indo_data, global_data, stock_data, news_data)
+    # AI analysis
+    print(Fore.YELLOW + '\nRunning AI top-down analysis...' + Style.RESET_ALL)
+    ai_report = analyze_with_ai(model, global_data, indo_data, stock_data, target_sector)
+
+    display_dashboard(indo_data, global_data, stock_data, news_data, alerts, ai_report)
 
 if __name__ == '__main__':
     main()
